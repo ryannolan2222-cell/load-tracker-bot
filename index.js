@@ -327,8 +327,3 @@ app.command('/halloffame', async ({ ack, client }) => {
   await app.start(PORT);
   console.log(`Load Tracker Bot running on port ${PORT}`);
 })();
-```
-
-Now deleting a load is as simple as:
-```
-FW: Load Tender 4821 #chipotle #delete
