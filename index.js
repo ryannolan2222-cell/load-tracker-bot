@@ -73,8 +73,12 @@ const app = new App({ token: process.env.SLACK_BOT_TOKEN, receiver });
 app.message(async ({ message, client }) => {
   try {
     checkReset();
+    console.log('MSG received:', message.channel, message.text);
     const channelName = WATCHED_CHANNELS[message.channel];
+    console.log('Channel match:', channelName);
     if (!channelName || message.subtype || !message.text) return;
+    const load = parseLoad(message.text);
+    console.log('Parsed load:', JSON.stringify(load));
     const load = parseLoad(message.text);
     if (!load) return;
     const entry = getOrCreate(load.customer);
