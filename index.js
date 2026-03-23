@@ -37,7 +37,6 @@ function monthStr() {
   const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
-
 function checkReset() {
   const today = todayStr();
   const week = weekStr();
@@ -46,13 +45,11 @@ function checkReset() {
   if (week !== lastWeek) { weekly = {}; lastWeek = week; }
   if (month !== lastMonth) { monthly = {}; lastMonth = month; }
 }
-
 function addToBoard(board, customer, type) {
   if (!board[customer]) board[customer] = { total: 0, spot: 0, contract: 0 };
   board[customer].total++;
   board[customer][type]++;
 }
-
 function parseLoad(text) {
   if (!text) return null;
   const tags = (text.match(/#[\w]+/g) || []).map(t => t.slice(1).toLowerCase());
@@ -67,6 +64,19 @@ function parseLoad(text) {
   if (!customer || !type) return null;
   return { customer, type };
 }
+function parseDateArg(arg) {
+  if (!arg || arg.length !== 6) return null;
+  const mm = arg.slice(0, 2);
+  const dd = arg.slice(2, 4);
+  const yy = arg.slice(4, 6);
+  const year = parseInt(yy) + 2000;
+  const date = new Date(`${year}-${mm}-${dd}`);
+  if (isNaN(date.getTime())) return null;
+  return {
+    dbKey: `${mm}/${dd}/${year}`,
+    display: date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+  };
+}
 
 function buildLiveMsg(board, newLoad, channelName) {
   const sorted = Object.entries(board).sort((a, b) => b[1].total - a[1].total);
@@ -76,7 +86,6 @@ function buildLiveMsg(board, newLoad, channelName) {
   const lines = sorted.map(([c, s]) => `• *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot / ${s.contract} contract)_${c === newLoad.customer ? ' ◀' : ''}`).join('\n');
   return [`${emoji} *New load logged* — *${newLoad.customer}* · ${newLoad.type.toUpperCase()} · #${channelName}`, '─'.repeat(42), lines, '─'.repeat(42), `*Total: ${totals.loads} loads today* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot · _${dateStr}_`].join('\n');
 }
-
 function buildSummaryMsg(board, label) {
   const sorted = Object.entries(board).sort((a, b) => b[1].total - a[1].total);
   const totals = sorted.reduce((acc, [, s]) => { acc.loads += s.total; acc.spot += s.spot; acc.contract += s.contract; return acc; }, { loads: 0, spot: 0, contract: 0 });
@@ -84,25 +93,85 @@ function buildSummaryMsg(board, label) {
   const lines = sorted.map(([c, s], i) => `${i < 3 ? medals[i] : '•'} *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot / ${s.contract} contract)_`).join('\n');
   return [`🏁 *${label}*`, '─'.repeat(42), lines || '_No loads logged_', '─'.repeat(42), `*Total: ${totals.loads} loads* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot`].join('\n');
 }
+function buildHistoricalMsg(rows, label) {
+  if (!rows.length) return `📅 *${label}*\n${'─'.repeat(42)}\n_No loads recorded for this date._`;
+  const board = {};
+  rows.forEach(r => {
+    if (!board[r.customer]) board[r.customer] = { total: 0, spot: 0, contract: 0 };
+    board[r.customer].total += parseInt(r.total);
+    board[r.customer].spot += parseInt(r.spot);
+    board[r.customer].contract += parseInt(r.contract);
+  });
+  const sorted = Object.entries(board).sort((a, b) => b[1].total - a[1].total);
+  const totals = sorted.reduce((acc, [, s]) => { acc.loads += s.total; acc.spot += s.spot; acc.contract += s.contract; return acc; }, { loads: 0, spot: 0, contract: 0 });
+  const medals = [':first_place_medal:', ':second_place_medal:', ':third_place_medal:'];
+  const lines = sorted.map(([c, s], i) => `${i < 3 ? medals[i] : '•'} *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot / ${s.contract} contract)_`).join('\n');
+  return [`📅 *${label}*`, '─'.repeat(42), lines, '─'.repeat(42), `*Total: ${totals.loads} loads* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot`].join('\n');
+}
+function buildCompareMsg(rowsA, dateA, rowsB, dateB) {
+  const toBoard = (rows) => {
+    const b = {};
+    rows.forEach(r => {
+      if (!b[r.customer]) b[r.customer] = { total: 0, spot: 0, contract: 0 };
+      b[r.customer].total += parseInt(r.total);
+      b[r.customer].spot += parseInt(r.spot);
+      b[r.customer].contract += parseInt(r.contract);
+    });
+    return b;
+  };
+  const boardA = toBoard(rowsA);
+  const boardB = toBoard(rowsB);
+  const allCustomers = [...new Set([...Object.keys(boardA), ...Object.keys(boardB)])].sort();
+  const totA = Object.values(boardA).reduce((s, v) => s + v.total, 0);
+  const totB = Object.values(boardB).reduce((s, v) => s + v.total, 0);
+  const lines = allCustomers.map(c => {
+    const a = boardA[c] || { total: 0 };
+    const b = boardB[c] || { total: 0 };
+    const diff = b.total - a.total;
+    const arrow = diff > 0 ? ` ▲${diff}` : diff < 0 ? ` ▼${Math.abs(diff)}` : ' ═';
+    return `• *${c}* — ${a.total} vs ${b.total}${arrow}`;
+  }).join('\n');
+  const totalDiff = totB - totA;
+  const totalArrow = totalDiff > 0 ? `▲${totalDiff}` : totalDiff < 0 ? `▼${Math.abs(totalDiff)}` : '═ same';
+  return [`📊 *COMPARISON*`, `_${dateA.display}_ vs _${dateB.display}_`, '─'.repeat(42), lines || '_No data for either date_', '─'.repeat(42), `*Totals: ${totA} vs ${totB} loads* ${totalArrow}`].join('\n');
+}
+function buildRecordMsg(customer, period, newCount, previous, previousDate) {
+  const periodLabels = { day: 'single day', week: 'single week', month: 'single month' };
+  const periodEmojis = { day: '📅', week: '📆', month: '🗓️' };
+  return [`🏆 *NEW RECORD — ${customer}!*`, `${periodEmojis[period]} Most loads in a ${periodLabels[period]}`, '─'.repeat(42), `*Previous best:* ${previous} loads _(set ${previousDate})_`, `*New record:* ${newCount} loads and counting`, '─'.repeat(42), `_Keep it up! 🚚_`].join('\n');
+}
 
 // ── Database ──────────────────────────────────────────────────
 let db;
-
 async function initDb() {
   db = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
   await db.connect();
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS records (
-      customer TEXT NOT NULL,
-      period TEXT NOT NULL,
-      record_count INTEGER NOT NULL,
-      achieved_date TEXT NOT NULL,
-      PRIMARY KEY (customer, period)
-    )
-  `);
-  console.log('Database connected and ready');
+  await db.query(`CREATE TABLE IF NOT EXISTS load_log (
+    id SERIAL PRIMARY KEY,
+    customer TEXT NOT NULL,
+    type TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    date_str TEXT NOT NULL,
+    week_str TEXT NOT NULL,
+    month_str TEXT NOT NULL,
+    logged_at TIMESTAMP DEFAULT NOW()
+  )`);
+  await db.query(`CREATE TABLE IF NOT EXISTS records (
+    customer TEXT NOT NULL,
+    period TEXT NOT NULL,
+    record_count INTEGER NOT NULL,
+    achieved_date TEXT NOT NULL,
+    PRIMARY KEY (customer, period)
+  )`);
+  console.log('Database ready');
 }
-
+async function saveLoad(customer, type, channel) {
+  await db.query('INSERT INTO load_log (customer, type, channel, date_str, week_str, month_str) VALUES ($1, $2, $3, $4, $5, $6)', [customer, type, channel, todayStr(), weekStr(), monthStr()]);
+}
+async function getLoadsForDate(dateStr) {
+  const res = await db.query(`SELECT customer, COUNT(*) as total, SUM(CASE WHEN type='spot' THEN 1 ELSE 0 END) as spot, SUM(CASE WHEN type='contract' THEN 1 ELSE 0 END) as contract FROM load_log WHERE date_str = $1 GROUP BY customer`, [dateStr]);
+  return res.rows;
+}
 async function checkAndUpdateRecord(customer, count, period) {
   const res = await db.query('SELECT record_count, achieved_date FROM records WHERE customer = $1 AND period = $2', [customer, period]);
   if (res.rows.length === 0) {
@@ -115,20 +184,6 @@ async function checkAndUpdateRecord(customer, count, period) {
     return { previous: existing.record_count, previousDate: existing.achieved_date };
   }
   return null;
-}
-
-function buildRecordMsg(customer, period, newCount, previous, previousDate) {
-  const periodLabels = { day: 'single day', week: 'single week', month: 'single month' };
-  const periodEmojis = { day: '📅', week: '📆', month: '🗓️' };
-  return [
-    `🏆 *NEW RECORD — ${customer}!*`,
-    `${periodEmojis[period]} Most loads in a ${periodLabels[period]}`,
-    '─'.repeat(42),
-    `*Previous best:* ${previous} loads _(set ${previousDate})_`,
-    `*New record:* ${newCount} loads and counting today`,
-    '─'.repeat(42),
-    `_Keep it up! 🚚_`
-  ].join('\n');
 }
 
 // ── App ───────────────────────────────────────────────────────
@@ -144,77 +199,75 @@ app.message(async ({ message, client }) => {
     if (!channelName || message.subtype || !message.text) return;
     const parsed = parseLoad(message.text);
     if (!parsed) return;
-
     addToBoard(daily, parsed.customer, parsed.type);
     addToBoard(weekly, parsed.customer, parsed.type);
     addToBoard(monthly, parsed.customer, parsed.type);
-
+    await saveLoad(parsed.customer, parsed.type, channelName);
+    await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildLiveMsg(daily, parsed, channelName), unfurl_links: false, unfurl_media: false });
+    await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: parsed.type === 'spot' ? 'moneybag' : 'receipt' });
     const dayCount = daily[parsed.customer].total;
     const weekCount = weekly[parsed.customer].total;
     const monthCount = monthly[parsed.customer].total;
-
-    // Post live scoreboard
-    await client.chat.postMessage({
-      channel: SCOREBOARD_CHANNEL,
-      text: buildLiveMsg(daily, parsed, channelName),
-      unfurl_links: false, unfurl_media: false
-    });
-
-    // React to original message
-    await client.reactions.add({
-      channel: message.channel,
-      timestamp: message.ts,
-      name: parsed.type === 'spot' ? 'moneybag' : 'receipt'
-    });
-
-    // Check records
-    const dayRecord = await checkAndUpdateRecord(parsed.customer, dayCount, 'day');
-    const weekRecord = await checkAndUpdateRecord(parsed.customer, weekCount, 'week');
-    const monthRecord = await checkAndUpdateRecord(parsed.customer, monthCount, 'month');
-
-    for (const [period, record] of [['day', dayRecord], ['week', weekRecord], ['month', monthRecord]]) {
+    for (const [period, count] of [['day', dayCount], ['week', weekCount], ['month', monthCount]]) {
+      const record = await checkAndUpdateRecord(parsed.customer, count, period);
       if (record) {
-        const count = period === 'day' ? dayCount : period === 'week' ? weekCount : monthCount;
-        await client.chat.postMessage({
-          channel: SCOREBOARD_CHANNEL,
-          text: buildRecordMsg(parsed.customer, period, count, record.previous, record.previousDate),
-          unfurl_links: false, unfurl_media: false
-        });
+        await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildRecordMsg(parsed.customer, period, count, record.previous, record.previousDate), unfurl_links: false, unfurl_media: false });
       }
     }
-
   } catch (err) { console.error('Error:', err.message); }
 });
 
 app.command('/dayscore', async ({ ack, client }) => {
-  await ack();
-  checkReset();
+  await ack(); checkReset();
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
   await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(daily, `DAY SCORE — ${dateStr.toUpperCase()}`) });
 });
-
 app.command('/finalscore', async ({ ack, client }) => {
-  await ack();
-  checkReset();
+  await ack(); checkReset();
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
   await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(daily, `FINAL SCORE — ${dateStr.toUpperCase()}`) });
 });
-
 app.command('/weekscore', async ({ ack, client }) => {
-  await ack();
-  checkReset();
+  await ack(); checkReset();
   const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const day = now.getDay();
   now.setDate(now.getDate() - day + (day === 0 ? -6 : 1));
-  const label = `WEEK OF ${now.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }).toUpperCase()}`;
-  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(weekly, label) });
+  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(weekly, `WEEK OF ${now.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }).toUpperCase()}`) });
 });
-
 app.command('/monthscore', async ({ ack, client }) => {
-  await ack();
-  checkReset();
+  await ack(); checkReset();
   const monthLabel = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'America/New_York' }).toUpperCase();
   await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(monthly, `${monthLabel} SCORE`) });
+});
+app.command('/score', async ({ ack, client, command }) => {
+  await ack();
+  const parsed = parseDateArg((command.text || '').trim());
+  if (!parsed) { await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Use format: `/score MMDDYY` — e.g. `/score 032326`' }); return; }
+  const rows = await getLoadsForDate(parsed.dbKey);
+  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildHistoricalMsg(rows, parsed.display.toUpperCase()) });
+});
+app.command('/compare', async ({ ack, client, command }) => {
+  await ack();
+  const parts = (command.text || '').trim().split(/\s+/);
+  if (parts.length !== 2) { await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Use format: `/compare MMDDYY MMDDYY` — e.g. `/compare 032326 032426`' }); return; }
+  const dateA = parseDateArg(parts[0]);
+  const dateB = parseDateArg(parts[1]);
+  if (!dateA || !dateB) { await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Invalid dates. Use MMDDYY format.' }); return; }
+  const [rowsA, rowsB] = await Promise.all([getLoadsForDate(dateA.dbKey), getLoadsForDate(dateB.dbKey)]);
+  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildCompareMsg(rowsA, dateA, rowsB, dateB) });
+});
+app.command('/halloffame', async ({ ack, client }) => {
+  await ack();
+  try {
+    const res = await db.query('SELECT customer, period, record_count, achieved_date FROM records ORDER BY period, record_count DESC');
+    const rows = res.rows;
+    const dayRows = rows.filter(r => r.period === 'day');
+    const weekRows = rows.filter(r => r.period === 'week');
+    const monthRows = rows.filter(r => r.period === 'month');
+    const fmt = (arr) => arr.length ? arr.map(r => `🥇 *${r.customer}* — ${r.record_count} load${r.record_count !== 1 ? 's' : ''} _(set ${r.achieved_date})_`).join('\n') : '_No records set yet_';
+    const msg = ['🏆 *HALL OF FAME*', '─'.repeat(42), '📅 *Daily Records*', fmt(dayRows), '', '📆 *Weekly Records*', fmt(weekRows), '', '🗓️ *Monthly Records*', fmt(monthRows), '─'.repeat(42)].join('\n');
+    await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: msg });
+  } catch (err) { console.error('Error:', err.message); await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Error fetching records.' }); }
 });
 
 (async () => {
