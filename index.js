@@ -64,6 +64,10 @@ function parseLoad(text) {
   if (!customer || !type) return null;
   return { customer, type };
 }
+function toDbKey(dateStr) {
+  const parts = dateStr.split('/');
+  return `${parseInt(parts[0])}/${parseInt(parts[1])}/${parts[2]}`;
+}
 function parseDateArg(arg) {
   if (!arg || arg.length !== 6) return null;
   const mm = arg.slice(0, 2);
@@ -73,7 +77,7 @@ function parseDateArg(arg) {
   const date = new Date(`${year}-${mm}-${dd}`);
   if (isNaN(date.getTime())) return null;
   return {
-dbKey: `${parseInt(mm)}/${parseInt(dd)}/${year}`,
+    dbKey: `${parseInt(mm)}/${parseInt(dd)}/${year}`,
     display: date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
   };
 }
@@ -86,15 +90,8 @@ function buildLiveMsg(board, newLoad, channelName) {
   const lines = sorted.map(([c, s]) => `• *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot / ${s.contract} contract)_${c === newLoad.customer ? ' ◀' : ''}`).join('\n');
   return [`${emoji} *New load logged* — *${newLoad.customer}* · ${newLoad.type.toUpperCase()} · #${channelName}`, '─'.repeat(42), lines, '─'.repeat(42), `*Total: ${totals.loads} loads today* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot · _${dateStr}_`].join('\n');
 }
-function buildSummaryMsg(board, label) {
-  const sorted = Object.entries(board).sort((a, b) => b[1].total - a[1].total);
-  const totals = sorted.reduce((acc, [, s]) => { acc.loads += s.total; acc.spot += s.spot; acc.contract += s.contract; return acc; }, { loads: 0, spot: 0, contract: 0 });
-  const medals = [':first_place_medal:', ':second_place_medal:', ':third_place_medal:'];
-  const lines = sorted.map(([c, s], i) => `${i < 3 ? medals[i] : '•'} *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot / ${s.contract} contract)_`).join('\n');
-  return [`🏁 *${label}*`, '─'.repeat(42), lines || '_No loads logged_', '─'.repeat(42), `*Total: ${totals.loads} loads* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot`].join('\n');
-}
-function buildHistoricalMsg(rows, label) {
-  if (!rows.length) return `📅 *${label}*\n${'─'.repeat(42)}\n_No loads recorded for this date._`;
+function buildSummaryFromRows(rows, label) {
+  if (!rows.length) return `🏁 *${label}*\n${'─'.repeat(42)}\n_No loads recorded_`;
   const board = {};
   rows.forEach(r => {
     if (!board[r.customer]) board[r.customer] = { total: 0, spot: 0, contract: 0 };
@@ -106,7 +103,7 @@ function buildHistoricalMsg(rows, label) {
   const totals = sorted.reduce((acc, [, s]) => { acc.loads += s.total; acc.spot += s.spot; acc.contract += s.contract; return acc; }, { loads: 0, spot: 0, contract: 0 });
   const medals = [':first_place_medal:', ':second_place_medal:', ':third_place_medal:'];
   const lines = sorted.map(([c, s], i) => `${i < 3 ? medals[i] : '•'} *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot / ${s.contract} contract)_`).join('\n');
-  return [`📅 *${label}*`, '─'.repeat(42), lines, '─'.repeat(42), `*Total: ${totals.loads} loads* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot`].join('\n');
+  return [`🏁 *${label}*`, '─'.repeat(42), lines, '─'.repeat(42), `*Total: ${totals.loads} loads* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot`].join('\n');
 }
 function buildCompareMsg(rowsA, dateA, rowsB, dateB) {
   const toBoard = (rows) => {
@@ -166,21 +163,29 @@ async function initDb() {
   console.log('Database ready');
 }
 async function saveLoad(customer, type, channel) {
-  await db.query('INSERT INTO load_log (customer, type, channel, date_str, week_str, month_str) VALUES ($1, $2, $3, $4, $5, $6)', [customer, type, channel, todayStr(), weekStr(), monthStr()]);
+  await db.query('INSERT INTO load_log (customer, type, channel, date_str, week_str, month_str) VALUES ($1, $2, $3, $4, $5, $6)', [customer, type, channel, toDbKey(todayStr()), weekStr(), monthStr()]);
 }
-async function getLoadsForDate(dateStr) {
-  const res = await db.query(`SELECT customer, COUNT(*) as total, SUM(CASE WHEN type='spot' THEN 1 ELSE 0 END) as spot, SUM(CASE WHEN type='contract' THEN 1 ELSE 0 END) as contract FROM load_log WHERE date_str = $1 GROUP BY customer`, [dateStr]);
+async function getLoadsForDate(dbKey) {
+  const res = await db.query(`SELECT customer, COUNT(*) as total, SUM(CASE WHEN type='spot' THEN 1 ELSE 0 END) as spot, SUM(CASE WHEN type='contract' THEN 1 ELSE 0 END) as contract FROM load_log WHERE date_str = $1 GROUP BY customer`, [dbKey]);
+  return res.rows;
+}
+async function getLoadsForWeek(weekStr) {
+  const res = await db.query(`SELECT customer, COUNT(*) as total, SUM(CASE WHEN type='spot' THEN 1 ELSE 0 END) as spot, SUM(CASE WHEN type='contract' THEN 1 ELSE 0 END) as contract FROM load_log WHERE week_str = $1 GROUP BY customer`, [weekStr]);
+  return res.rows;
+}
+async function getLoadsForMonth(monthStr) {
+  const res = await db.query(`SELECT customer, COUNT(*) as total, SUM(CASE WHEN type='spot' THEN 1 ELSE 0 END) as spot, SUM(CASE WHEN type='contract' THEN 1 ELSE 0 END) as contract FROM load_log WHERE month_str = $1 GROUP BY customer`, [monthStr]);
   return res.rows;
 }
 async function checkAndUpdateRecord(customer, count, period) {
   const res = await db.query('SELECT record_count, achieved_date FROM records WHERE customer = $1 AND period = $2', [customer, period]);
   if (res.rows.length === 0) {
-    await db.query('INSERT INTO records (customer, period, record_count, achieved_date) VALUES ($1, $2, $3, $4)', [customer, period, count, todayStr()]);
+    await db.query('INSERT INTO records (customer, period, record_count, achieved_date) VALUES ($1, $2, $3, $4)', [customer, period, count, toDbKey(todayStr())]);
     return null;
   }
   const existing = res.rows[0];
   if (count > existing.record_count) {
-    await db.query('UPDATE records SET record_count = $1, achieved_date = $2 WHERE customer = $3 AND period = $4', [count, todayStr(), customer, period]);
+    await db.query('UPDATE records SET record_count = $1, achieved_date = $2 WHERE customer = $3 AND period = $4', [count, toDbKey(todayStr()), customer, period]);
     return { previous: existing.record_count, previousDate: existing.achieved_date };
   }
   return null;
@@ -220,31 +225,36 @@ app.message(async ({ message, client }) => {
 app.command('/dayscore', async ({ ack, client }) => {
   await ack(); checkReset();
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
-  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(daily, `DAY SCORE — ${dateStr.toUpperCase()}`) });
+  const rows = await getLoadsForDate(toDbKey(todayStr()));
+  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryFromRows(rows, `DAY SCORE — ${dateStr.toUpperCase()}`) });
 });
 app.command('/finalscore', async ({ ack, client }) => {
   await ack(); checkReset();
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
-  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(daily, `FINAL SCORE — ${dateStr.toUpperCase()}`) });
+  const rows = await getLoadsForDate(toDbKey(todayStr()));
+  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryFromRows(rows, `FINAL SCORE — ${dateStr.toUpperCase()}`) });
 });
 app.command('/weekscore', async ({ ack, client }) => {
   await ack(); checkReset();
   const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const day = now.getDay();
   now.setDate(now.getDate() - day + (day === 0 ? -6 : 1));
-  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(weekly, `WEEK OF ${now.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }).toUpperCase()}`) });
+  const label = `WEEK OF ${now.toLocaleDateString('en-US', { month: 'long', day: 'numeric' }).toUpperCase()}`;
+  const rows = await getLoadsForWeek(weekStr());
+  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryFromRows(rows, label) });
 });
 app.command('/monthscore', async ({ ack, client }) => {
   await ack(); checkReset();
   const monthLabel = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'America/New_York' }).toUpperCase();
-  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryMsg(monthly, `${monthLabel} SCORE`) });
+  const rows = await getLoadsForMonth(monthStr());
+  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryFromRows(rows, `${monthLabel} SCORE`) });
 });
 app.command('/score', async ({ ack, client, command }) => {
   await ack();
   const parsed = parseDateArg((command.text || '').trim());
   if (!parsed) { await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Use format: `/score MMDDYY` — e.g. `/score 032326`' }); return; }
   const rows = await getLoadsForDate(parsed.dbKey);
-  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildHistoricalMsg(rows, parsed.display.toUpperCase()) });
+  await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildSummaryFromRows(rows, parsed.display.toUpperCase()) });
 });
 app.command('/compare', async ({ ack, client, command }) => {
   await ack();
@@ -261,11 +271,8 @@ app.command('/halloffame', async ({ ack, client }) => {
   try {
     const res = await db.query('SELECT customer, period, record_count, achieved_date FROM records ORDER BY period, record_count DESC');
     const rows = res.rows;
-    const dayRows = rows.filter(r => r.period === 'day');
-    const weekRows = rows.filter(r => r.period === 'week');
-    const monthRows = rows.filter(r => r.period === 'month');
     const fmt = (arr) => arr.length ? arr.map(r => `🥇 *${r.customer}* — ${r.record_count} load${r.record_count !== 1 ? 's' : ''} _(set ${r.achieved_date})_`).join('\n') : '_No records set yet_';
-    const msg = ['🏆 *HALL OF FAME*', '─'.repeat(42), '📅 *Daily Records*', fmt(dayRows), '', '📆 *Weekly Records*', fmt(weekRows), '', '🗓️ *Monthly Records*', fmt(monthRows), '─'.repeat(42)].join('\n');
+    const msg = ['🏆 *HALL OF FAME*', '─'.repeat(42), '📅 *Daily Records*', fmt(rows.filter(r => r.period === 'day')), '', '📆 *Weekly Records*', fmt(rows.filter(r => r.period === 'week')), '', '🗓️ *Monthly Records*', fmt(rows.filter(r => r.period === 'month')), '─'.repeat(42)].join('\n');
     await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: msg });
   } catch (err) { console.error('Error:', err.message); await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Error fetching records.' }); }
 });
