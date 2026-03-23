@@ -73,7 +73,7 @@ function parseDateArg(arg) {
   const date = new Date(`${year}-${mm}-${dd}`);
   if (isNaN(date.getTime())) return null;
   return {
-    dbKey: `${mm}/${dd}/${year}`,
+dbKey: `${parseInt(mm)}/${parseInt(dd)}/${year}`,
     display: date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
   };
 }
