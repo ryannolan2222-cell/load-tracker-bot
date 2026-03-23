@@ -1,11 +1,11 @@
 const { App, ExpressReceiver } = require('@slack/bolt');
 
 const WATCHED_CHANNELS = {
-  'C0AMV6LJAMD': 'tender-call-out',
-  'C0A746ZH6QG': 'tender-call-out-edi',
-  'C0ACYJ1BT7U': 'red-flag'
+  'C09P0JSCWEP': 'tender-call-out',
+  'C0ACYJ1BT7U': 'tender-call-out-edi',
+  'C0A746ZH6QG': 'red-flag'
 };
-const SCOREBOARD_CHANNEL = 'C09P0JSCWEP';
+const SCOREBOARD_CHANNEL = 'C0AMV6LJAMD';
 
 const CUSTOMER_MAP = {
   sysco: 'Sysco', kraftheinz: 'Kraft Heinz', kraft: 'Kraft Heinz',
