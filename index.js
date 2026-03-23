@@ -51,9 +51,9 @@ function buildScoreboardMsg(newLoad, channelName) {
   const sorted = Object.entries(scoreboard).sort((a, b) => b[1].total - a[1].total);
   const totals = sorted.reduce((acc, [, s]) => { acc.loads += s.total; acc.spot += s.spot; acc.contract += s.contract; return acc; }, { loads: 0, spot: 0, contract: 0 });
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
-  const emoji = newLoad.type === 'spot' ? ':yellow_circle:' : ':large_green_circle:';
+  const emoji = newLoad.type === 'spot' ? ':moneybag:' : ':receipt:';
   const lines = sorted.map(([c, s]) => `• *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot)_${c === newLoad.customer ? ' ◀' : ''}`).join('\n');
-  return [`${emoji} *New load logged* — *${newLoad.customer}* · ${newLoad.type.toUpperCase()} · #${channelName}`, '─'.repeat(40), lines, '─'.repeat(40), `*Total: ${totals.loads} loads today* · :large_green_circle: ${totals.contract} contract · :yellow_circle: ${totals.spot} spot · _${dateStr}_`].join('\n');
+  return [`${emoji} *New load logged* — *${newLoad.customer}* · ${newLoad.type.toUpperCase()} · #${channelName}`, '─'.repeat(40), lines, '─'.repeat(40), `*Total: ${totals.loads} loads today* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot · _${dateStr}_`].join('\n');
 }
 
 function buildFinalMsg() {
@@ -62,7 +62,7 @@ function buildFinalMsg() {
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
   const medals = [':first_place_medal:', ':second_place_medal:', ':third_place_medal:'];
   const lines = sorted.map(([c, s], i) => `${i < 3 ? medals[i] : '•'} *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot / ${s.contract} contract)_`).join('\n');
-  return [`🏁 *FINAL LOAD COUNT — ${dateStr}*`, '─'.repeat(40), lines || '_No loads logged today_', '─'.repeat(40), `*Total: ${totals.loads} loads* · :large_green_circle: ${totals.contract} contract · :yellow_circle: ${totals.spot} spot`].join('\n');
+  return [`🏁 *FINAL LOAD COUNT — ${dateStr}*`, '─'.repeat(40), lines || '_No loads logged today_', '─'.repeat(40), `*Total: ${totals.loads} loads* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot`].join('\n');
 }
 
 const PORT = parseInt(process.env.PORT) || 8080;
@@ -74,17 +74,14 @@ const app = new App({ token: process.env.SLACK_BOT_TOKEN, receiver });
 app.message(async ({ message, client }) => {
   try {
     checkReset();
-    console.log('Received message in channel:', message.channel, '| text:', message.text);
     const channelName = WATCHED_CHANNELS[message.channel];
-    console.log('Channel name:', channelName);
     if (!channelName || message.subtype || !message.text) return;
     const parsed = parseLoad(message.text);
-    console.log('Parsed:', JSON.stringify(parsed));
     if (!parsed) return;
     const entry = getOrCreate(parsed.customer);
     entry.total++; entry[parsed.type]++;
     await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildScoreboardMsg(parsed, channelName), unfurl_links: false, unfurl_media: false });
-    await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: parsed.type === 'spot' ? 'yellow_circle' : 'white_check_mark' });
+    await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: parsed.type === 'spot' ? 'moneybag' : 'receipt' });
   } catch (err) { console.error('Error:', err.message); }
 });
 
