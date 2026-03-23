@@ -204,10 +204,10 @@ const http = require('http');
 http.createServer((req, res) => {
   res.writeHead(200);
   res.end('Load Tracker Bot running');
-}).listen(process.env.PORT || 3000);
+}).listen(process.env.PORT || 8080);
 
 // Start
 (async () => {
-  await app.start(process.env.PORT || 3000);
+  await app.start(process.env.PORT || 8080);
   console.log('Load Tracker Bot is running');
 })();
