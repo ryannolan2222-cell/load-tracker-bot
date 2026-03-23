@@ -68,24 +68,23 @@ function buildFinalMsg() {
 const PORT = parseInt(process.env.PORT) || 8080;
 const receiver = new ExpressReceiver({ signingSecret: process.env.SLACK_SIGNING_SECRET, endpoints: '/slack/events' });
 receiver.router.get('/', (req, res) => res.send('Load Tracker Bot running'));
+
 const app = new App({ token: process.env.SLACK_BOT_TOKEN, receiver });
 
 app.message(async ({ message, client }) => {
   try {
     checkReset();
-    console.log('MSG received:', message.channel, message.text);
+    console.log('Received message in channel:', message.channel, '| text:', message.text);
     const channelName = WATCHED_CHANNELS[message.channel];
-    console.log('Channel match:', channelName);
+    console.log('Channel name:', channelName);
     if (!channelName || message.subtype || !message.text) return;
-    const load = parseLoad(message.text);
-    console.log('Parsed load:', JSON.stringify(load));
-    const load = parseLoad(message.text);
-    if (!load) return;
-    const entry = getOrCreate(load.customer);
-    entry.total++; entry[load.type]++;
-    console.log(`Load: ${load.customer} (${load.type}) from #${channelName}`);
-    await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildScoreboardMsg(load, channelName), unfurl_links: false, unfurl_media: false });
-    await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: load.type === 'spot' ? 'yellow_circle' : 'white_check_mark' });
+    const parsed = parseLoad(message.text);
+    console.log('Parsed:', JSON.stringify(parsed));
+    if (!parsed) return;
+    const entry = getOrCreate(parsed.customer);
+    entry.total++; entry[parsed.type]++;
+    await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildScoreboardMsg(parsed, channelName), unfurl_links: false, unfurl_media: false });
+    await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: parsed.type === 'spot' ? 'yellow_circle' : 'white_check_mark' });
   } catch (err) { console.error('Error:', err.message); }
 });
 
