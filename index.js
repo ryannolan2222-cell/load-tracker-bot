@@ -54,15 +54,18 @@ function parseLoad(text) {
   if (!text) return null;
   const tags = (text.match(/#[\w]+/g) || []).map(t => t.slice(1).toLowerCase());
   if (!tags.length) return null;
+  const isDelete = tags.includes('delete');
   let type = tags.includes('spot') ? 'spot' : tags.includes('contract') ? 'contract' : null;
   let customer = null;
   for (const tag of tags) {
-    if (tag === 'spot' || tag === 'contract') continue;
+    if (['spot', 'contract', 'delete'].includes(tag)) continue;
     customer = CUSTOMER_MAP[tag] || (tag.length > 1 ? tag.charAt(0).toUpperCase() + tag.slice(1) : null);
     if (customer) break;
   }
-  if (!customer || !type) return null;
-  return { customer, type };
+  if (!customer) return null;
+  if (isDelete) return { customer, type: null, isDelete: true };
+  if (!type) return null;
+  return { customer, type, isDelete: false };
 }
 function toDbKey(dateStr) {
   const parts = dateStr.split('/');
@@ -164,26 +167,28 @@ async function initDb() {
   console.log('Database ready');
 }
 async function rebuildFromDb() {
-  // Rebuild daily board from today's db records
   const todayKey = toDbKey(todayStr());
   const dayRes = await db.query('SELECT customer, type FROM load_log WHERE date_str = $1', [todayKey]);
   daily = {};
   dayRes.rows.forEach(r => addToBoard(daily, r.customer, r.type));
-
-  // Rebuild weekly board
   const weekRes = await db.query('SELECT customer, type FROM load_log WHERE week_str = $1', [weekStr()]);
   weekly = {};
   weekRes.rows.forEach(r => addToBoard(weekly, r.customer, r.type));
-
-  // Rebuild monthly board
   const monthRes = await db.query('SELECT customer, type FROM load_log WHERE month_str = $1', [monthStr()]);
   monthly = {};
   monthRes.rows.forEach(r => addToBoard(monthly, r.customer, r.type));
-
-  console.log(`Rebuilt from DB — today: ${Object.keys(daily).length} customers, ${Object.values(daily).reduce((s,v)=>s+v.total,0)} loads`);
+  console.log(`Rebuilt — today: ${Object.values(daily).reduce((s,v)=>s+v.total,0)} loads`);
 }
 async function saveLoad(customer, type, channel) {
-  await db.query('INSERT INTO load_log (customer, type, channel, date_str, week_str, month_str) VALUES ($1, $2, $3, $4, $5, $6)', [customer, type, channel, toDbKey(todayStr()), weekStr(), monthStr()]);
+  const res = await db.query('INSERT INTO load_log (customer, type, channel, date_str, week_str, month_str) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id', [customer, type, channel, toDbKey(todayStr()), weekStr(), monthStr()]);
+  return res.rows[0].id;
+}
+async function deleteLastLoad(customer) {
+  const res = await db.query('SELECT id, type FROM load_log WHERE customer = $1 AND date_str = $2 ORDER BY logged_at DESC LIMIT 1', [customer, toDbKey(todayStr())]);
+  if (!res.rows.length) return null;
+  const { id, type } = res.rows[0];
+  await db.query('DELETE FROM load_log WHERE id = $1', [id]);
+  return type;
 }
 async function getLoadsForDate(dbKey) {
   const res = await db.query(`SELECT customer, COUNT(*) as total, SUM(CASE WHEN type='spot' THEN 1 ELSE 0 END) as spot, SUM(CASE WHEN type='contract' THEN 1 ELSE 0 END) as contract FROM load_log WHERE date_str = $1 GROUP BY customer`, [dbKey]);
@@ -224,6 +229,26 @@ app.message(async ({ message, client }) => {
     if (!channelName || message.subtype || !message.text) return;
     const parsed = parseLoad(message.text);
     if (!parsed) return;
+
+    // Handle delete
+    if (parsed.isDelete) {
+      const deletedType = await deleteLastLoad(parsed.customer);
+      if (!deletedType) {
+        await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: `⚠️ No load found for *${parsed.customer}* today to delete.` });
+        return;
+      }
+      await rebuildFromDb();
+      const rows = await getLoadsForDate(toDbKey(todayStr()));
+      const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
+      await client.chat.postMessage({
+        channel: SCOREBOARD_CHANNEL,
+        text: [`🗑️ *Load deleted* — *${parsed.customer}* · ${deletedType.toUpperCase()} removed`, '─'.repeat(42), buildSummaryFromRows(rows, `UPDATED SCORE — ${dateStr.toUpperCase()}`)].join('\n')
+      });
+      await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'x' });
+      return;
+    }
+
+    // Handle new load
     addToBoard(daily, parsed.customer, parsed.type);
     addToBoard(weekly, parsed.customer, parsed.type);
     addToBoard(monthly, parsed.customer, parsed.type);
@@ -279,7 +304,7 @@ app.command('/score', async ({ ack, client, command }) => {
 app.command('/compare', async ({ ack, client, command }) => {
   await ack();
   const parts = (command.text || '').trim().split(/\s+/);
-  if (parts.length !== 2) { await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Use format: `/compare MMDDYY MMDDYY` — e.g. `/compare 032326 032426`' }); return; }
+  if (parts.length !== 2) { await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Use format: `/compare MMDDYY MMDDYY`' }); return; }
   const dateA = parseDateArg(parts[0]);
   const dateB = parseDateArg(parts[1]);
   if (!dateA || !dateB) { await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: '❌ Invalid dates. Use MMDDYY format.' }); return; }
@@ -302,3 +327,8 @@ app.command('/halloffame', async ({ ack, client }) => {
   await app.start(PORT);
   console.log(`Load Tracker Bot running on port ${PORT}`);
 })();
+```
+
+Now deleting a load is as simple as:
+```
+FW: Load Tender 4821 #chipotle #delete
