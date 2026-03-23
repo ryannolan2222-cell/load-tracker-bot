@@ -57,15 +57,17 @@ function parseLoad(text) {
   const isDelete = tags.includes('delete');
   let type = tags.includes('spot') ? 'spot' : tags.includes('contract') ? 'contract' : null;
   let customer = null;
+  let qty = 1;
   for (const tag of tags) {
     if (['spot', 'contract', 'delete'].includes(tag)) continue;
+    if (/^x\d+$/.test(tag)) { qty = Math.min(parseInt(tag.slice(1)), 50); continue; }
     customer = CUSTOMER_MAP[tag] || (tag.length > 1 ? tag.charAt(0).toUpperCase() + tag.slice(1) : null);
-    if (customer) break;
+    if (customer) continue;
   }
   if (!customer) return null;
-  if (isDelete) return { customer, type: null, isDelete: true };
+  if (isDelete) return { customer, type: null, isDelete: true, qty };
   if (!type) return null;
-  return { customer, type, isDelete: false };
+  return { customer, type, isDelete: false, qty };
 }
 function toDbKey(dateStr) {
   const parts = dateStr.split('/');
@@ -84,14 +86,14 @@ function parseDateArg(arg) {
     display: date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
   };
 }
-
 function buildLiveMsg(board, newLoad, channelName) {
   const sorted = Object.entries(board).sort((a, b) => b[1].total - a[1].total);
   const totals = sorted.reduce((acc, [, s]) => { acc.loads += s.total; acc.spot += s.spot; acc.contract += s.contract; return acc; }, { loads: 0, spot: 0, contract: 0 });
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
   const emoji = newLoad.type === 'spot' ? ':moneybag:' : ':receipt:';
+  const qtyLabel = newLoad.qty > 1 ? ` ×${newLoad.qty}` : '';
   const lines = sorted.map(([c, s]) => `• *${c}* — ${s.total} load${s.total !== 1 ? 's' : ''} _(${s.spot} spot / ${s.contract} contract)_${c === newLoad.customer ? ' ◀' : ''}`).join('\n');
-  return [`${emoji} *New load logged* — *${newLoad.customer}* · ${newLoad.type.toUpperCase()} · #${channelName}`, '─'.repeat(42), lines, '─'.repeat(42), `*Total: ${totals.loads} loads today* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot · _${dateStr}_`].join('\n');
+  return [`${emoji} *${newLoad.qty > 1 ? newLoad.qty + ' loads' : 'New load'} logged* — *${newLoad.customer}*${qtyLabel} · ${newLoad.type.toUpperCase()} · #${channelName}`, '─'.repeat(42), lines, '─'.repeat(42), `*Total: ${totals.loads} loads today* · :receipt: ${totals.contract} contract · :moneybag: ${totals.spot} spot · _${dateStr}_`].join('\n');
 }
 function buildSummaryFromRows(rows, label) {
   if (!rows.length) return `🏁 *${label}*\n${'─'.repeat(42)}\n_No loads recorded_`;
@@ -183,12 +185,13 @@ async function saveLoad(customer, type, channel) {
   const res = await db.query('INSERT INTO load_log (customer, type, channel, date_str, week_str, month_str) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id', [customer, type, channel, toDbKey(todayStr()), weekStr(), monthStr()]);
   return res.rows[0].id;
 }
-async function deleteLastLoad(customer) {
-  const res = await db.query('SELECT id, type FROM load_log WHERE customer = $1 AND date_str = $2 ORDER BY logged_at DESC LIMIT 1', [customer, toDbKey(todayStr())]);
-  if (!res.rows.length) return null;
-  const { id, type } = res.rows[0];
-  await db.query('DELETE FROM load_log WHERE id = $1', [id]);
-  return type;
+async function deleteLastLoads(customer, qty) {
+  const res = await db.query('SELECT id, type FROM load_log WHERE customer = $1 AND date_str = $2 ORDER BY logged_at DESC LIMIT $3', [customer, toDbKey(todayStr()), qty]);
+  if (!res.rows.length) return [];
+  const ids = res.rows.map(r => r.id);
+  const types = res.rows.map(r => r.type);
+  await db.query('DELETE FROM load_log WHERE id = ANY($1)', [ids]);
+  return types;
 }
 async function getLoadsForDate(dbKey) {
   const res = await db.query(`SELECT customer, COUNT(*) as total, SUM(CASE WHEN type='spot' THEN 1 ELSE 0 END) as spot, SUM(CASE WHEN type='contract' THEN 1 ELSE 0 END) as contract FROM load_log WHERE date_str = $1 GROUP BY customer`, [dbKey]);
@@ -232,27 +235,30 @@ app.message(async ({ message, client }) => {
 
     // Handle delete
     if (parsed.isDelete) {
-      const deletedType = await deleteLastLoad(parsed.customer);
-      if (!deletedType) {
-        await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: `⚠️ No load found for *${parsed.customer}* today to delete.` });
+      const deletedTypes = await deleteLastLoads(parsed.customer, parsed.qty);
+      if (!deletedTypes.length) {
+        await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: `⚠️ No loads found for *${parsed.customer}* today to delete.` });
         return;
       }
       await rebuildFromDb();
       const rows = await getLoadsForDate(toDbKey(todayStr()));
       const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' });
+      const qtyLabel = deletedTypes.length > 1 ? `${deletedTypes.length} loads` : '1 load';
       await client.chat.postMessage({
         channel: SCOREBOARD_CHANNEL,
-        text: [`🗑️ *Load deleted* — *${parsed.customer}* · ${deletedType.toUpperCase()} removed`, '─'.repeat(42), buildSummaryFromRows(rows, `UPDATED SCORE — ${dateStr.toUpperCase()}`)].join('\n')
+        text: [`🗑️ *${qtyLabel} deleted* — *${parsed.customer}*`, buildSummaryFromRows(rows, `UPDATED SCORE — ${dateStr.toUpperCase()}`)].join('\n')
       });
       await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'x' });
       return;
     }
 
-    // Handle new load
-    addToBoard(daily, parsed.customer, parsed.type);
-    addToBoard(weekly, parsed.customer, parsed.type);
-    addToBoard(monthly, parsed.customer, parsed.type);
-    await saveLoad(parsed.customer, parsed.type, channelName);
+    // Handle new load(s)
+    for (let i = 0; i < parsed.qty; i++) {
+      addToBoard(daily, parsed.customer, parsed.type);
+      addToBoard(weekly, parsed.customer, parsed.type);
+      addToBoard(monthly, parsed.customer, parsed.type);
+      await saveLoad(parsed.customer, parsed.type, channelName);
+    }
     await client.chat.postMessage({ channel: SCOREBOARD_CHANNEL, text: buildLiveMsg(daily, parsed, channelName), unfurl_links: false, unfurl_media: false });
     await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: parsed.type === 'spot' ? 'moneybag' : 'receipt' });
     const dayCount = daily[parsed.customer].total;
